@@ -37,7 +37,7 @@ except:
 """
 """
 
-VERSION = '1.9.2'
+VERSION = '1.11.4'
 AUTHOR = 'yutiansut'
 
 
@@ -82,8 +82,14 @@ setup(
         'Intended Audience :: Developers',
         'Operating System :: OS Independent',
     ],
-    install_requires=['quantaxis', 'qaenv'],
+    install_requires=['quantaxis', 'qaenv', 'click', 'quantaxis_pubsub'],
     # install_requires=requirements,
+    entry_points={
+        'console_scripts': [
+            'qastocksim=QIFIAccount.main:qasimStock',
+            'qass_sendorder=QIFIAccount.main:qasimstock_sendorder'
+        ]
+    },
     keywords=KEYWORDS,
     author=AUTHOR,
     author_email=AUTHOR_EMAIL,

@@ -1,9 +1,12 @@
 import datetime
 import uuid
-from QUANTAXIS.QAARP.market_preset import MARKET_PRESET
-from QIFIAccount.QAPosition import QA_Position
+
 import pymongo
 from qaenv import mongo_ip
+
+from QIFIAccount.QAPosition import QA_Position
+from QUANTAXIS.QAARP.market_preset import MARKET_PRESET
+
 
 class ORDER_DIRECTION():
     """订单的买卖方向
@@ -49,7 +52,7 @@ def parse_orderdirection(od):
 
 class QIFI_Account():
 
-    def __init__(self, username, password, model="SIM", broker_name="QAPaperTrading", trade_host= mongo_ip, init_cash= 1000000):
+    def __init__(self, username, password, model="SIM", broker_name="QAPaperTrading", trade_host=mongo_ip, init_cash=1000000, taskid = str(uuid.uuid4())):
         """Initial
         QIFI Account是一个基于 DIFF/ QIFI/ QAAccount后的一个实盘适用的Account基类
 
@@ -97,7 +100,9 @@ class QIFI_Account():
         self.withdraw = 0  # 出金
         self.withdrawQuota = 0  # 可取金额
         self.close_profit = 0
+        self.premium = 0  #本交易日内交纳的期权权利金
         self.event_id = 0
+        self.taskid = taskid
         self.money = 0
         # QIFI 协议
         self.transfers = {}
@@ -106,7 +111,7 @@ class QIFI_Account():
 
         self.frozen = {}
 
-        self.events = {}
+        self.event = {}
         self.positions = {}
         self.trades = {}
         self.orders = {}
@@ -147,10 +152,11 @@ class QIFI_Account():
             self.withdrawQuota = accpart.get('WithdrawQuota')
             self.close_profit = accpart.get('close_profit')
             self.static_balance = accpart.get('static_balance')
-            self.events = message.get('events')
+            self.event = message.get('event')
             self.trades = message.get('trades')
             self.transfers = message.get('transfers')
             self.orders = message.get('orders')
+            self.taskid = message.get('taskid', str(uuid.uuid4()))
 
             positions = message.get('positions')
             for position in positions.values():
@@ -166,6 +172,8 @@ class QIFI_Account():
             self.status = message.get('status')
             self.wsuri = message.get('wsuri')
 
+            self.on_reload()
+
             if message.get('trading_day', '') == str(self.trading_day):
                 # reload
                 pass
@@ -175,7 +183,7 @@ class QIFI_Account():
                 self.settle()
 
     def sync(self):
-        # self.log(self.message)
+        self.on_sync()
         self.db.account.update({'account_cookie': self.user_id, 'password': self.password}, {
             '$set': self.message}, upsert=True)
         self.db.hisaccount.insert_one(
@@ -190,20 +198,26 @@ class QIFI_Account():
         self.close_profit = 0
         self.deposit = 0  # 入金
         self.withdraw = 0  # 出金
-
+        self.premium = 0
         self.money += self.frozen_margin
 
         self.orders = {}
         self.frozen = {}
         self.trades = {}
         self.transfers = {}
-        self.events = {}
+        self.event = {}
         self.event_id = 0
 
         for item in self.positions.values():
             item.settle()
 
-        self.sync()
+        #self.sync()
+
+    def on_sync(self):
+        pass
+
+    def on_reload(self):
+        pass
 
     @property
     def dtstr(self):
@@ -220,7 +234,7 @@ class QIFI_Account():
             "error_id": 0,  # 转账结果代码
             "error_msg": "成功",  # 转账结果代码
         }
-        self.events[self.dtstr] = "转账成功 {}".format(money)
+        self.event[self.dtstr] = "转账成功 {}".format(money)
 
     def ask_withdraw(self, money):
         if self.withdrawQuota > money:
@@ -233,9 +247,9 @@ class QIFI_Account():
                 "error_id": 0,  # 转账结果代码
                 "error_msg": "成功",  # 转账结果代码
             }
-            self.events[self.dtstr] = "转账成功 {}".format(-money)
+            self.event[self.dtstr] = "转账成功 {}".format(-money)
         else:
-            self.events[self.dtstr] = "转账失败: 余额不足 left {}  ask {}".format(
+            self.event[self.dtstr] = "转账失败: 余额不足 left {}  ask {}".format(
                 self.withdrawQuota, money)
 
     def create_simaccount(self):
@@ -253,7 +267,7 @@ class QIFI_Account():
         self.event_id = 0
         self.transfers = {}
         self.banks = {}
-        self.events = {}
+        self.event = {}
         self.positions = {}
         self.trades = {}
         self.orders = {}
@@ -279,7 +293,7 @@ class QIFI_Account():
 
     def log(self, message):
         print(message)
-        self.events[self.dtstr] = message
+        #self.event[self.dtstr] = message
 
     @property
     def open_orders(self):
@@ -303,7 +317,7 @@ class QIFI_Account():
             "money": self.money,         # // 当前可用现金
             "pub_host": self.pub_host,
             "trade_host": self.trade_host,
-            "taskid": "",
+            "taskid": self.taskid,
             "sourceid": self.source_id,
             "updatetime": str(self.last_updatetime),
             "wsuri": self.wsuri,
@@ -314,7 +328,7 @@ class QIFI_Account():
             "trades": self.trades,
             "positions": self.position_msg,
             "orders": self.orders,
-            "events": self.events,
+            "event": self.event,
             "transfers": self.transfers,
             "banks": self.banks,
             "frozen": self.frozen,
@@ -383,11 +397,9 @@ class QIFI_Account():
 
     @property
     def commission(self):
+        """本交易日内交纳的手续费
+        """
         return sum([position.commission for position in self.positions.values()])
-
-    @property
-    def premium(self):
-        pass
 
     @property
     def balance(self):
@@ -399,7 +411,7 @@ class QIFI_Account():
 
         return self.static_balance + self.deposit - self.withdraw + self.float_profit + self.close_profit
 
-    def order_check(self, code: str, amount: float, price: float, towards: int, order_id: str) -> bool:
+    def order_check(self, code: str, amount: int, price: float, towards: int, order_id: str) -> bool:
         res = False
         qapos = self.get_position(code)
 
@@ -424,7 +436,7 @@ class QIFI_Account():
                 res = True
             else:
                 self.log("BUYCLOSETODAY 今日仓位不足")
-        elif towards == ORDER_DIRECTION.SELL_CLOSE:
+        elif towards in [ORDER_DIRECTION.SELL_CLOSE, ORDER_DIRECTION.SELL]:
             # self.log("sellclose")
             # self.log(self.volume_long - self.volume_long_frozen)
             # self.log(amount)
@@ -445,6 +457,7 @@ class QIFI_Account():
                 return True
             else:
                 self.log("SELLCLOSETODAY 今日仓位不足")
+
         elif towards in [ORDER_DIRECTION.BUY_OPEN,
                          ORDER_DIRECTION.SELL_OPEN,
                          ORDER_DIRECTION.BUY]:
@@ -484,13 +497,13 @@ class QIFI_Account():
                 "towards": int(towards),
                 "exchange_id": self.market_preset.get_exchange(code),
                 "order_time": self.dtstr,
-                "volume": float(amount),
+                "volume": int(amount),
                 "price": float(price),
                 "order_id": order_id,
                 "seqno": self.event_id,
                 "direction": direction,
                 "offset": offset,
-                "volume_orign": float(amount),
+                "volume_orign": int(amount),
                 "price_type": "LIMIT",
                 "limit_price": float(price),
                 "time_condition": "GFD",
@@ -498,17 +511,21 @@ class QIFI_Account():
                 "insert_date_time": self.transform_dt(self.dtstr),
                 'order_time': self.dtstr,
                 "exchange_order_id": str(uuid.uuid4()),
-                "status": 100,
-                "volume_left": float(amount),
+                "status": "ALIVE",
+                "volume_left": int(amount),
                 "last_msg": "已报"
             }
             self.orders[order_id] = order
             self.log('下单成功 {}'.format(order_id))
             self.sync()
+            self.on_ordersend(order)
             return order
         else:
             self.log(RuntimeError("ORDER CHECK FALSE: {}".format(code)))
             return False
+
+    def on_ordersend(self, order):
+        pass
 
     def cancel_order(self, order_id):
         """Initial
@@ -517,7 +534,7 @@ class QIFI_Account():
         """
         od = self.orders[order_id]
         od['last_msg'] = '已撤单'
-        od['status'] = 500
+        od['status'] = "CANCEL"
         od['volume_left'] = 0
 
         if od['offset'] in ['CLOSE', 'CLOSETODAY']:
@@ -540,8 +557,8 @@ class QIFI_Account():
     def make_deal(self, order: dict):
         if isinstance(order, dict):
             self.receive_deal(order["instrument_id"], trade_price=order["limit_price"], trade_time=self.dtstr,
-                            trade_amount=order["volume_left"], trade_towards=order["towards"],
-                            order_id=order['order_id'], trade_id=str(uuid.uuid4()))
+                              trade_amount=order["volume_left"], trade_towards=order["towards"],
+                              order_id=order['order_id'], trade_id=str(uuid.uuid4()))
 
     def receive_deal(self,
                      code,
@@ -566,7 +583,7 @@ class QIFI_Account():
                 frozen['amount'] = 0
                 frozen['money'] = 0
                 od['last_msg'] = '全部成交'
-                od["status"] = 300
+                od["status"] = "FINISHED"
                 self.log('全部成交 {}'.format(order_id))
 
             elif trade_amount < vl:
@@ -577,7 +594,7 @@ class QIFI_Account():
                 frozen['money'] -= release_money
 
                 od['last_msg'] = '部分成交'
-                od["status"] = 200
+                od["status"] = "ALIVE"
                 self.log('部分成交 {}'.format(order_id))
 
             od['volume_left'] -= trade_amount
@@ -601,6 +618,7 @@ class QIFI_Account():
                 "volume": trade_amount,
                 "price": trade_price,
                 "trade_time": trade_time,
+                "commission": float(0),
                 "trade_date_time": self.transform_dt(trade_time)}
 
             # update accounts
@@ -632,16 +650,17 @@ class QIFI_Account():
         pass
 
     def on_price_change(self, code, price):
+        if code in self.positions.keys():
+            try:
+                pos = self.get_position(code)
+                if pos.last_price == price:
+                    pass
+                else:
+                    pos.last_price = price
+                    self.sync()
+            except Exception as e:
 
-        try:
-            pos = self.get_position(code)
-            if pos.last_price == price:
-                pass
-            else:
-                pos.last_price = price
-                self.sync()
-        except Exception as e:
-            self.log(e)
+                self.log(e)
 
 
 if __name__ == "__main__":
